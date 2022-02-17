@@ -1,0 +1,151 @@
+#!/bin/bash
+
+###############################################################################
+############################## README #########################################
+#
+# This script will execute a series of fio based IO tests against a targeted
+# directory specified in its execution. Depending on the specific scenario,
+# this test will create either a) a very large file that is double (2x) the
+# size of the physical RAM on this system or b) a multiple of files with a
+# combined total size that is double (2x) the size of the physical RAM on this
+# system. To ensure that caching at the OS level of the storage subsystem will
+# not affect the test results, the fio command switch direct=1 is utilized to
+# correctly bypass the kernel page cache.
+#
+# NOTE: We recommend you stop all services before executing this script and
+# will be prompoted to do so.
+#
+# RESULTS: This test is meant to provide guidance and is not a hard-and-fast
+# indicator of how your Satellite will perform. For more information please
+# see this KCS here:
+#
+# https://access.redhat.com/solutions/3397771
+#
+# Generally you wish to see on average 100MB/sec or higher in the READ test.
+#  - Local SSD based storage should values of 600MB/sec or higher.
+#  - Spinning disks should see values in the range of 100-200MB/sec or higher.
+#  - Note that the random READ/WRITE results are expected to be much slower.
+#  - If you see values below this, please open a support ticket for assistance.
+#
+###############################################################################
+
+
+# Exit on any error
+set -e
+PARALLELSTREAMS=8
+
+testlocation(){
+  mkdir -p $TESTDIRECTORY
+  echo ""
+  echo "Starting IO tests via the 'fio' command. This test will require"
+  echo "approximately 5 minutes to complete."
+  echo ""
+  echo "************* Test read throughput by performing sequential reads with multiple parallel streams ($PARALLELSTREAMS+), using an I/O block size of 1 MB and an I/O depth of at least 64:"
+  echo ""
+  fio --name=read-throughput --size="$FILEGBPS"G --directory=$TESTDIRECTORY --numjobs=$PARALLELSTREAMS \
+      --time_based --runtime=60s --ramp_time=2s --ioengine=libaio \
+      --direct=1 --verify=0 --bs=1M --iodepth=64 --rw=read \
+      --group_reporting=1
+  echo ""
+  echo "************* Removing test files."
+  rm -f "$TESTDIRECTORY"/*
+  echo ""
+  echo "************* Test read IOPS by performing random reads, using an I/O block size of 4 KB and an I/O depth of at least 64:"
+  echo ""
+  fio --name=read-iops --size="$FILEGB"G --directory=$TESTDIRECTORY \
+      --time_based --runtime=60s --ramp_time=2s --ioengine=libaio \
+      --direct=1 --verify=0 --bs=4K --iodepth=64 --rw=randread \
+      --group_reporting=1
+  echo ""
+  echo "************* Removing test files."
+  rm -f "$TESTDIRECTORY"/*
+  echo ""
+  echo "************* Test write throughput by performing sequential writes with multiple parallel streams ($PARALLELSTREAMS+), using an I/O block size of 1 MB and an I/O depth of at least 64:"
+  fio --name=write-throughput --size="$FILEGBPS"G --directory=$TESTDIRECTORY --numjobs=$PARALLELSTREAMS \
+      --time_based --runtime=60s --ramp_time=2s --ioengine=libaio \
+      --direct=1 --verify=0 --bs=1M --iodepth=64 --rw=write \
+      --group_reporting=1
+  echo ""
+  echo "************* Removing test files."
+  rm -f "$TESTDIRECTORY"/*
+  echo ""
+  echo "************* Test write IOPS by performing random writes, using an I/O block size of 4 KB and an I/O depth of at least 64:"
+  echo ""
+  fio --name=write-iops --size="$FILEGB"G --directory=$TESTDIRECTORY \
+      --time_based --runtime=60s --ramp_time=2s --ioengine=libaio \
+      --direct=1 --verify=0 --bs=4K --iodepth=64 --rw=randwrite \
+      --group_reporting=1
+  echo ""
+  echo "************* Removing test files."
+  rm -f "$TESTDIRECTORY"/*
+  echo ""
+#  echo "************* Running Random READ/WRITE test via fio:"
+#  fio --name=randrw-test --rw=randrw --size="$FILEGB"G --directory=$TESTDIRECTORY --rwmixread=80
+#  echo ""
+#  echo "************* Removing test files."
+#  rm -f "$TESTDIRECTORY"/*
+  echo ""
+  echo "Test complete! There is still a directory located : $TESTDIRECTORY that you"
+  echo "will need to remove to run this test again."
+}
+
+usage(){
+  echo "Please specify a path to test file IO against:"
+  echo ""
+  echo "  # ./storage-benchmark /var/lib/pulp/"
+  echo ""
+}
+
+TESTPATH=$1
+
+if [ -z $TESTPATH ]
+then
+  usage
+  exit 1
+fi
+
+RAMGB=`grep MemTotal /proc/meminfo  | awk '{s+=$2} END {print s / 1000000}'`
+# Convert to integer
+RAMGB=`printf "%.0f\n" "$RAMGB"`
+FILEGB="$(($RAMGB * 2))"
+FILEGBPS="$(($RAMGB * 2 / $PARALLELSTREAMS))"
+TESTDIRECTORY=$TESTPATH/storage-benchmark
+
+echo "This test creates a test file that is double (2X) the size of this system's"
+echo "RAM in GB. This benchmark will create a test file of size.. "
+echo ""
+echo  -e "\033[33;5;7m$FILEGB Gigabytes\033[0m"
+echo ""
+echo ".. in the: [$TESTDIRECTORY] location. This is to ensure that the test utilizes"
+echo "a combination of cached and non-cached data during the test."
+echo ""
+echo "**** WARNING! Please verify you have enough free space to create a $FILEGB GB"
+echo "file in this location before proceeding. "
+echo ""
+echo "Do you wish to proceed? (Y/N) "
+read PROCEED
+if [[ ! $PROCEED =~ ^[Yy]$ ]]
+then
+    echo "** cancelled **"
+    exit 1
+fi
+
+
+if [ ! -x /usr/bin/fio ]
+then
+  echo "This benchmark requires the 'fio' command be installed"
+  echo "Would you like to install it?"
+  read INSTALLFIO
+  if [[ ! $INSTALLFIO =~ ^[Yy]$ ]]
+    then
+    	echo "** cancelled **"
+    	exit 1
+    else
+    	echo "** Installing fio **"
+    	yum install -y fio
+    fi
+fi
+
+testlocation
+
+echo "Finished."
